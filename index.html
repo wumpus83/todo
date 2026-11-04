@@ -4,6 +4,7 @@
 <style>
 *{box-sizing:border-box}body{margin:0;background:#edf2ef;color:#172d25;font:16px system-ui}main{max-width:720px;margin:auto;padding:24px 16px}header,nav,.row{display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap}h1,h2,p{margin:.3em 0}small,label{display:block;margin:8px 0}article,dialog{background:white;border:1px solid #cbd9d1;border-radius:16px;padding:16px;margin-bottom:12px}dialog{margin:auto;width:min(94vw,460px);max-height:90dvh;overflow:auto;color:inherit}dialog::backdrop{background:#18332988}button,input,select{font:inherit}button,select,input:not([type=range]){min-height:44px;border:1px solid #adc3b7;border-radius:9px;background:white;color:inherit;padding:8px 12px}button{cursor:pointer}button.primary,button[aria-pressed=true]{background:#195742;color:white;border-color:#195742}input[type=range],input[name=title]{width:100%;accent-color:#195742}input[type=range]{height:32px}nav{justify-content:flex-start;margin:20px 0 12px}.meta{color:#405c50}.error{color:#a22}fieldset{border:0;padding:0;margin:12px 0}legend{font-weight:650}.actions{display:flex;gap:6px;flex-wrap:wrap}h2{overflow-wrap:anywhere;font-size:1.2rem}#status{min-height:1.5em}
 table{width:100%;border-collapse:collapse;background:white}th,td{text-align:left;padding:8px;border-bottom:1px solid #cbd9d1;vertical-align:middle}th{background:#dce9e1}td:first-child{min-width:120px;overflow-wrap:anywhere}.progress-controls{flex-wrap:nowrap;align-items:center}.progress-controls button{padding:4px 8px}.progress-controls span{min-width:3ch;text-align:center}td button.field{padding:4px;border-color:transparent;text-align:left;text-decoration:underline;text-underline-offset:3px}td button.compact{padding:4px 7px;font-size:.85rem;white-space:nowrap}.scroll{overflow-x:auto}main{max-width:1040px}th button{background:transparent;border-color:transparent;padding:4px;text-align:left;font-weight:650;white-space:nowrap}button.delete-task{background:#d00019;border-color:#d00019;color:#fff}
+.task-name-short{display:none}
 @media (orientation:landscape) and (max-height:550px) and (max-width:1100px){
   main{padding:8px 10px;padding-left:max(10px,env(safe-area-inset-left));padding-right:max(10px,env(safe-area-inset-right))}
   header small{margin:2px 0;font-size:10px}
@@ -13,9 +14,12 @@ table{width:100%;border-collapse:collapse;background:white}th,td{text-align:left
   header button,nav button{min-height:34px;padding:3px 9px;font-size:13px}
   table{font-size:12px;table-layout:auto}
   th,td{padding:3px 4px;white-space:nowrap}
-  td:first-child{width:100%;min-width:0;max-width:0;overflow:hidden;text-overflow:ellipsis}
+  td:first-child{width:21ch;min-width:0;max-width:21ch;overflow:hidden;text-overflow:ellipsis}
   th button,td button,td button.field,td button.compact{min-height:32px;padding:2px 5px;font-size:inherit;white-space:nowrap}
   td:first-child button.field{display:block;max-width:100%;overflow:hidden;text-overflow:ellipsis}
+  .task-name-short{display:inline}
+  .task-name-full{display:none}
+  td:last-child button.task-action{min-width:36px}
   td .actions{flex-wrap:nowrap;gap:3px}
   .progress-controls span{min-width:4ch}
 }
@@ -307,9 +311,10 @@ function render(){
       const cell=row.insertCell();
       if(field==='title')cell.title=t.title;
       if(field==='due')cell.title=parse(t.due).toLocaleDateString(undefined,{weekday:'long'});
-      if(t.closed){cell.textContent=value;continue;}
+      if(t.closed){cell.textContent=value;if(field==='title')shortenTaskName(cell,value);continue;}
       const control=button(value,()=>edit(t,field));
       control.className='field';
+      if(field==='title')shortenTaskName(control,value);
       control.setAttribute('aria-label','Edit '+({title:'name',due:'due date',repeat:'recurrence',effort:'effort'})[field]+': '+value);
       cell.append(control);
     }
@@ -452,6 +457,15 @@ function edit(task,field){
     return change(tasks=>tasks.push({id:uid(),title:name,due,dueTime:date.time.value,anchor:due,occurrence:0,effort:Number(estimate.value),progress:0,repeat:rule,closed:null,successor:null}));
   });
 }
+function shortenTaskName(element,name){
+  const characters=Array.from(name);
+  if(characters.length<=20)return;
+  const full=document.createElement('span');
+  full.className='task-name-full';full.textContent=name;
+  const short=document.createElement('span');
+  short.className='task-name-short';short.textContent=characters.slice(0,19).join('')+'…';
+  element.replaceChildren(full,short);
+}
 function taskActions(task){
   const actions=document.createElement('div');
   actions.className='actions';
@@ -459,12 +473,13 @@ function taskActions(task){
     completeTask(task).catch(e=>document.getElementById('status').textContent=e.message);
   },true);
   if(!task.closed){
+    complete.classList.add('task-action');
     complete.title='Complete task';
     complete.setAttribute('aria-label','Complete '+task.title);
   }
   const remove=button('D',()=>openModal('Delete this task?',paragraph(task.title),'Delete',
     ()=>updateTask(task.id,(t,tasks)=>tasks.splice(tasks.indexOf(t),1))));
-  remove.className='delete-task';
+  remove.className='delete-task task-action';
   remove.title='Delete task';
   remove.setAttribute('aria-label','Delete '+task.title);
   actions.append(complete,remove);
