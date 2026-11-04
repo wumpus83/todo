@@ -272,7 +272,7 @@ function render(){
     if(name==='Postpone'||name==='Action'){th.textContent=name;header.append(th);continue;}
     const selected=sort?.column===name;
     if(selected)th.setAttribute('aria-sort',sort.direction===1?'ascending':'descending');
-    const control=button((name==='Recurrence'?'Recur':name)+(selected?(sort.direction===1?' ↑':' ↓'):''),()=>{
+    const control=button((name==='Recurrence'?'Recur':name==='Effort'?'Eff':name)+(selected?(sort.direction===1?' ↑':' ↓'):''),()=>{
       sortPausedUntil=0;clearTimeout(sortTimer);
       sortByView[view]={column:name,direction:selected?-sort.direction:(name==='Priority'?-1:1)};
       render();
