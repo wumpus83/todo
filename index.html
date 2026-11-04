@@ -23,10 +23,11 @@ table{width:100%;border-collapse:collapse;background:white}th,td{text-align:left
   td .actions{flex-wrap:nowrap;gap:3px}
   .progress-controls span{min-width:4ch}
 }
+.app-heading{display:flex;align-items:baseline;gap:6px}
 .app-version{font-size:10px;color:#405c50;white-space:nowrap}
 </style>
-<main><header><div><small>PERSONAL TASK MANAGER</small><h1>todo</h1></div><button class="primary" id="add">+ New task</button></header>
-<nav aria-label="Task views"><button id="active" aria-pressed="true">Active</button><button id="completed" aria-pressed="false">Completed</button><button id="refresh">Refresh</button><button id="dropbox" type="button">Connect Dropbox</button><span class="app-version" aria-label="App version 1.0.0">v1.0.0</span></nav>
+<main><header><div><small>PERSONAL TASK MANAGER</small><div class="app-heading"><h1>todo</h1><span class="app-version" aria-label="App version 1.0.1">v1.0.1</span></div></div><button class="primary" id="add">+ New task</button></header>
+<nav aria-label="Task views"><button id="active" aria-pressed="true">Active</button><button id="completed" aria-pressed="false">Completed</button><button id="refresh">Refresh</button><button id="dropbox" type="button">Connect Dropbox</button></nav>
 <p id="status" role="status"></p><section id="list" aria-label="Tasks"></section></main>
 <dialog id="modal" aria-labelledby="heading"><form id="form"><h2 id="heading"></h2><div id="fields"></div><p id="formError" class="error" role="alert"></p><div class="actions"><button id="cancel" type="button">Cancel</button><button class="primary" id="save">Save</button></div></form></dialog>
 <script>
