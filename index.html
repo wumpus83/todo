@@ -202,6 +202,7 @@ function paragraph(text, cls){
   const p=document.createElement('p');p.textContent=text;p.className=cls||'';return p;
 }
 const sortByView = {};
+let postponeDirection=1;
 let sortPausedUntil=0, sortTimer;
 const compare = (a,b) => typeof a==='number'?a-b:String(a).localeCompare(String(b));
 function sortValue(task,column,now){
@@ -289,7 +290,19 @@ function render(){
   const header=table.createTHead().insertRow();
   for(const name of headers){
     const th=document.createElement('th');th.scope='col';
-    if(name==='Postpone'||name==='Action'){th.textContent=name;header.append(th);continue;}
+    if(name==='Postpone'){
+      const toggle=button('Postpone',()=>{
+        postponeDirection=-postponeDirection;
+        render();
+        document.getElementById('postpone-direction').focus();
+      });
+      toggle.id='postpone-direction';
+      toggle.title='Toggle between adding and subtracting time';
+      toggle.setAttribute('aria-label','Postpone (toggle subtract mode)');
+      toggle.setAttribute('aria-pressed',String(postponeDirection<0));
+      th.append(toggle);header.append(th);continue;
+    }
+    if(name==='Action'){th.textContent=name;header.append(th);continue;}
     const selected=sort?.column===name;
     if(selected)th.setAttribute('aria-sort',sort.direction===1?'ascending':'descending');
     const control=button((name==='Recurrence'?'Recur':name)+(selected?(sort.direction===1?' ↑':' ↓'):''),()=>{
@@ -351,13 +364,13 @@ function render(){
         task.due=due;
       },true)
         .catch(e=>$('status').textContent=e.message);
-      const control=button(name,()=>move(1));
+      const control=button(postponeDirection>0?name:'-'+name.slice(1),()=>move(postponeDirection));
       const unitName=unit.slice(0,-1);
-      control.setAttribute('aria-label','Postpone by one '+unitName);
-      control.title='Add one '+unitName+' (right-click to subtract)';
+      control.setAttribute('aria-label',(postponeDirection>0?'Add one ':'Subtract one ')+unitName);
+      control.title=postponeDirection>0?'Add one '+unitName+' (right-click to subtract)':'Subtract one '+unitName+' (right-click to add)';
       control.oncontextmenu=event=>{
         event.preventDefault();
-        move(-1);
+        move(-postponeDirection);
       };
       control.className='compact';
       actions.append(control);
