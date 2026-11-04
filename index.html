@@ -1,0 +1,560 @@
+﻿<!doctype html>
+<html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>todo</title>
+<style>
+*{box-sizing:border-box}body{margin:0;background:#edf2ef;color:#172d25;font:16px system-ui}main{max-width:720px;margin:auto;padding:24px 16px}header,nav,.row{display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap}h1,h2,p{margin:.3em 0}small,label{display:block;margin:8px 0}article,dialog{background:white;border:1px solid #cbd9d1;border-radius:16px;padding:16px;margin-bottom:12px}dialog{margin:auto;width:min(94vw,460px);max-height:90dvh;overflow:auto;color:inherit}dialog::backdrop{background:#18332988}button,input,select{font:inherit}button,select,input:not([type=range]){min-height:44px;border:1px solid #adc3b7;border-radius:9px;background:white;color:inherit;padding:8px 12px}button{cursor:pointer}button.primary,button[aria-pressed=true]{background:#195742;color:white;border-color:#195742}input[type=range],input[name=title]{width:100%;accent-color:#195742}input[type=range]{height:32px}nav{justify-content:flex-start;margin:20px 0 12px}.meta{color:#405c50}.error{color:#a22}fieldset{border:0;padding:0;margin:12px 0}legend{font-weight:650}.actions{display:flex;gap:6px;flex-wrap:wrap}h2{overflow-wrap:anywhere;font-size:1.2rem}#status{min-height:1.5em}
+table{width:100%;border-collapse:collapse;background:white}th,td{text-align:left;padding:8px;border-bottom:1px solid #cbd9d1;vertical-align:middle}th{background:#dce9e1}td:first-child{min-width:120px;overflow-wrap:anywhere}.progress-controls{flex-wrap:nowrap;align-items:center}.progress-controls button{padding:4px 8px}.progress-controls span{min-width:3ch;text-align:center}td button.field{padding:4px;border-color:transparent;text-align:left;text-decoration:underline;text-underline-offset:3px}td button.compact{padding:4px 7px;font-size:.85rem;white-space:nowrap}.scroll{overflow-x:auto}main{max-width:1040px}th button{background:transparent;border-color:transparent;padding:4px;text-align:left;font-weight:650;white-space:nowrap}button.delete-task{background:#d00019;border-color:#d00019;color:#fff}</style>
+<main><header><div><small>PERSONAL TASK MANAGER</small><h1>todo</h1></div><button class="primary" id="add">+ New task</button></header>
+<nav aria-label="Task views"><button id="active" aria-pressed="true">Active</button><button id="completed" aria-pressed="false">Completed</button><button id="refresh">Refresh</button><button id="dropbox" type="button">Connect Dropbox</button></nav>
+<p id="status" role="status"></p><section id="list" aria-label="Tasks"></section></main>
+<dialog id="modal" aria-labelledby="heading"><form id="form"><h2 id="heading"></h2><div id="fields"></div><p id="formError" class="error" role="alert"></p><div class="actions"><button id="cancel" type="button">Cancel</button><button class="primary" id="save">Save</button></div></form></dialog>
+<script>
+'use strict';
+const $ = id => document.getElementById(id);
+const appKey = '2tmqfka603bvuoi';
+const redirect = 'https://wumpus83.github.io/todo/';
+const taskPath = '/daywork-data.json';
+const tokenKey = 'todo-dropbox-session';
+const pendingKey = 'todo-dropbox-pending';
+let revision = null, loaded = false, connecting = false;
+function session(){
+  const token=JSON.parse(sessionStorage.getItem(tokenKey)||'null');
+  return token?.expires>Date.now()?token:null;
+}
+function connectionControls(){
+  const connected=Boolean(session());
+  $('dropbox').textContent=connected?'Disconnect Dropbox':'Connect Dropbox';
+  $('dropbox').disabled=connecting;
+  $('add').disabled=!connected||!loaded;
+}
+let state = {revision:0,tasks:[]}, view = 'active', busy = false, modalAction, cancelAction;
+const efforts = [1,2,3,5,8,13,21];
+const dateKey = d => [d.getFullYear(),String(d.getMonth()+1).padStart(2,'0'),String(d.getDate()).padStart(2,'0')].join('-');
+const today = () => dateKey(new Date());
+const parse = s => new Date(s+'T12:00:00');
+const display = s => ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'][parse(s).getDay()]+' '+s;
+const deadline = task => new Date(task.due+'T'+(task.dueTime||'23:59')+':00').getTime();
+const showDue = task => task.due+(task.dueTime?' '+task.dueTime:'');
+function shift(date, count, unit) {
+  const d = parse(date);
+  if(unit === 'months'){
+    const day = d.getDate();
+    d.setDate(1);
+    d.setMonth(d.getMonth()+count);
+    const last = new Date(d.getFullYear(),d.getMonth()+1,0).getDate();
+    d.setDate(Math.min(day,last));
+  } else d.setDate(d.getDate()+count*(unit==='weeks'?7:1));
+  return dateKey(d);
+}
+const priority = (task, now) => {
+  const remainingHours = task.effort * (100-task.progress) / 100;
+  const availableDays = (deadline(task)-now)/86400000;
+  if (remainingHours === 0) return 0;
+  return availableDays > 0 ? Math.min(999, remainingHours / availableDays) : 999;
+};
+function uid(){
+  return Array.from(crypto.getRandomValues(new Uint32Array(4)), n=>n.toString(16).padStart(8,'0')).join('');
+}
+async function connect(){
+  if(location.origin+location.pathname!==redirect){
+    location.assign(redirect);
+    return;
+  }
+  const verifier=uid()+uid();
+  const nonce=uid();
+  const hash=await crypto.subtle.digest('SHA-256',new TextEncoder().encode(verifier));
+  const challenge=btoa(String.fromCharCode(...new Uint8Array(hash)))
+    .replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
+  sessionStorage.setItem(pendingKey,JSON.stringify({verifier,nonce}));
+  const params=new URLSearchParams({
+    client_id:appKey,redirect_uri:redirect,response_type:'code',state:nonce,
+    code_challenge:challenge,code_challenge_method:'S256',token_access_type:'online',
+    scope:'files.content.read files.content.write'
+  });
+  location.assign('https://www.dropbox.com/oauth2/authorize?'+params);
+}
+async function finishConnection(){
+  const params=new URLSearchParams(location.search);
+  if(!params.has('code')&&!params.has('error'))return;
+  const pending=JSON.parse(sessionStorage.getItem(pendingKey)||'null');
+  sessionStorage.removeItem(pendingKey);
+  history.replaceState(null,'',location.pathname);
+  if(!pending||params.get('state')!==pending.nonce)throw Error('Dropbox sign-in expired. Select Connect Dropbox to try again.');
+  if(params.has('error'))throw Error('Dropbox did not authorize todo. Select Connect Dropbox to try again.');
+  const result=await fetch('https://api.dropboxapi.com/oauth2/token',{
+    method:'POST',body:new URLSearchParams({
+      grant_type:'authorization_code',code:params.get('code'),client_id:appKey,
+      redirect_uri:redirect,code_verifier:pending.verifier
+    })
+  });
+  if(!result.ok)throw Error('Dropbox sign-in failed. Check the app settings and try again.');
+  const token=await result.json();
+  sessionStorage.setItem(tokenKey,JSON.stringify({access:token.access_token,expires:Date.now()+token.expires_in*1000}));
+}
+async function fileRequest(operation,args,body){
+  const token=session();
+  if(!token)throw Error('Connect Dropbox to access your tasks.');
+  const headers={Authorization:'Bearer '+token.access,'Dropbox-API-Arg':JSON.stringify(args)};
+  if(body!==undefined)headers['Content-Type']='application/octet-stream';
+  const result=await fetch('https://content.dropboxapi.com/2/files/'+operation,{method:'POST',headers,body});
+  if(result.status===401){
+    sessionStorage.removeItem(tokenKey);
+    loaded=false;
+    connectionControls();
+    throw Error('Dropbox sign-in expired. Select Connect Dropbox to reconnect.');
+  }
+  return result;
+}
+async function load(){
+  const result=await fileRequest('download',{path:taskPath});
+  if(result.status===409){
+    const problem=await result.json();
+    if(problem.error?.['.tag']==='path'&&problem.error.path?.['.tag']==='not_found'){
+      return {data:{revision:0,tasks:[]},rev:null};
+    }
+  }
+  if(!result.ok)throw Error('Could not load tasks from Dropbox. Check access and try Refresh.');
+  const data=await result.json();
+  const rev=JSON.parse(result.headers.get('Dropbox-API-Result')||'null')?.rev;
+  if(!rev||!Array.isArray(data?.tasks)||!Number.isSafeInteger(data.revision)){
+    throw Error('The Dropbox task file could not be read safely.');
+  }
+  return {data,rev};
+}
+async function refresh(force=false){
+  if(busy||connecting||$('modal').open||!session()){
+    if(!session()&&!connecting){
+      connectionControls();
+      $('status').textContent='Connect Dropbox to access your tasks.';
+    }
+    return;
+  }
+  busy=true;
+  try{
+    const {data,rev}=await load();
+    if(force===true||rev!==revision||!loaded){
+      state=data;revision=rev;loaded=true;
+      render();
+    }
+    $('status').textContent='Connected to Dropbox';
+  } catch(e){$('status').textContent=e.message;}
+  finally{busy=false;connectionControls();}
+}
+async function change(update,pauseSort=false){
+  if(!loaded||!session())throw Error('Connect Dropbox and load your tasks before editing.');
+  if(busy)throw Error('Please try again in a moment.');
+  busy=true;
+  try{
+    const next=JSON.parse(JSON.stringify(state));
+    update(next.tasks);
+    next.revision++;
+    const mode=revision?{'.tag':'update',update:revision}:'add';
+    const result=await fileRequest('upload',{path:taskPath,mode,autorename:false,strict_conflict:true},JSON.stringify(next));
+    if(result.status===409){
+      const latest=await load();
+      state=latest.data;revision=latest.rev;
+      render();
+      throw Error('Dropbox rejected this save. The latest list is loaded. Close any open editor and retry your change.');
+    }
+    if(!result.ok)throw Error('Could not save to Dropbox. Check your connection and try again.');
+    revision=(await result.json()).rev;
+    state=next;
+    if(pauseSort)deferSort();
+    else {sortPausedUntil=0;clearTimeout(sortTimer);}
+    render();
+  } finally{busy=false;}
+}
+function updateTask(id, update, pauseSort=false){
+  return change(tasks=>{
+    const task=tasks.find(t=>t.id===id);
+    if(!task) throw Error('This task is unavailable.');
+    update(task,tasks);
+  },pauseSort);
+}
+function button(label, action, primary=false){
+  const b=document.createElement('button');
+  b.type='button'; b.textContent=label;
+  if(primary)b.className='primary';
+  b.onclick=action;
+  return b;
+}
+function paragraph(text, cls){
+  const p=document.createElement('p');p.textContent=text;p.className=cls||'';return p;
+}
+const sortByView = {};
+let sortPausedUntil=0, sortTimer;
+const compare = (a,b) => typeof a==='number'?a-b:String(a).localeCompare(String(b));
+function sortValue(task,column,now){
+  switch(column){
+    case 'Task': return task.title;
+    case 'Due': return deadline(task);
+    case 'Effort': return task.effort;
+    case 'Recurrence': return task.repeat?task.repeat.unit+' '+String(task.repeat.count).padStart(3,'0')+' '+task.repeat.mode:'';
+    case 'Progress': return task.progress;
+    case 'Completed': return task.closed;
+    case 'Priority': return priority(task,now);
+  }
+}
+function updatePriorityRow(row,task,now){
+  const score=priority(task,now);
+  // This logarithmic scale places score 0.5 halfway between 0 and 4.
+  const colorPosition=Math.log1p(12*Math.min(score,4))/Math.log(49);
+  row.style.backgroundColor=deadline(task)<now
+    ? '#eadcf6'
+    : 'hsl('+(120*(1-colorPosition))+' 65% 89%)';
+  row.querySelector('.priority-score').textContent=score.toFixed(2);
+}
+function rowPositions(){
+  return new Map(Array.from(document.querySelectorAll('#list tbody tr[data-task-id]'),
+    (row,index)=>[row.dataset.taskId,{index,top:row.getBoundingClientRect().top}]));
+}
+function animateReorder(before){
+  if(matchMedia('(prefers-reduced-motion: reduce)').matches)return;
+  const rows=[...document.querySelectorAll('#list tbody tr[data-task-id]')];
+  const moves=rows.map((row,index)=>{
+    const previous=before.get(row.dataset.taskId);
+    return previous&&previous.index!==index
+      ? previous.top-row.getBoundingClientRect().top : 0;
+  });
+  rows.forEach((row,index)=>{
+    if(moves[index]&&row.animate)row.animate(
+      [{transform:'translateY('+moves[index]+'px)'},{transform:'translateY(0)'}],
+      {duration:220,easing:'ease-out'}
+    );
+  });
+}
+function deferSort(){
+  sortPausedUntil=Date.now()+3000;
+  clearTimeout(sortTimer);
+  sortTimer=setTimeout(()=>{
+    if(view==='active'&&!document.getElementById('modal').open)render();
+  },3000);
+}
+function tickPriority(){
+  if(document.hidden||view!=='active')return;
+  const now=Date.now();
+  const tasks=new Map(state.tasks.map(task=>[task.id,task]));
+  const rows=[...document.querySelectorAll('#list tbody tr[data-task-id]')];
+  for(const row of rows)if(row.querySelector('.priority-score'))updatePriorityRow(row,tasks.get(row.dataset.taskId),now);
+  const sort=sortByView.active;
+  if(now<sortPausedUntil||(sort&&sort.column!=='Priority')||$('modal').open||document.activeElement?.closest('#list'))return;
+  const direction=sort?.direction??-1;
+  const ordered=[...rows].sort((a,b)=>{
+    const first=tasks.get(a.dataset.taskId),second=tasks.get(b.dataset.taskId);
+    return direction*(priority(first,now)-priority(second,now))||deadline(first)-deadline(second)||first.title.localeCompare(second.title);
+  });
+  if(ordered.some((row,index)=>row!==rows[index])){
+    const before=rowPositions();
+    rows[0].parentElement.append(...ordered);
+    animateReorder(before);
+  }
+}
+function render(){
+  const before=rowPositions();
+  const now=Date.now();
+  const tasks=state.tasks.filter(t=>view==='completed'?t.closed:!t.closed);
+  const sort=sortByView[view];
+  tasks.sort((a,b)=>{
+    if(view==='active'&&now<sortPausedUntil&&before.has(a.id)&&before.has(b.id)){
+      return before.get(a.id).index-before.get(b.id).index;
+    }
+    const selected=sort?sort.direction*compare(sortValue(a,sort.column,now),sortValue(b,sort.column,now)):0;
+    return selected||(view==='completed'?b.closed.localeCompare(a.closed):priority(b,now)-priority(a,now)||deadline(a)-deadline(b))||a.title.localeCompare(b.title);
+  });
+  $('list').replaceChildren();
+  if(!tasks.length)$('list').append(paragraph(view==='active'?'No active tasks. Add one to get started.':'No completed tasks yet.'));
+  if(!tasks.length)return;
+  const table=document.createElement('table');
+  const headers=view==='active'?['Task','Due','Effort','Recurrence','Progress','Priority','Postpone','Action']:['Task','Due','Effort','Recurrence','Completed','Action'];
+  const header=table.createTHead().insertRow();
+  for(const name of headers){
+    const th=document.createElement('th');th.scope='col';
+    if(name==='Postpone'||name==='Action'){th.textContent=name;header.append(th);continue;}
+    const selected=sort?.column===name;
+    if(selected)th.setAttribute('aria-sort',sort.direction===1?'ascending':'descending');
+    const control=button((name==='Recurrence'?'Recur':name)+(selected?(sort.direction===1?' ↑':' ↓'):''),()=>{
+      sortPausedUntil=0;clearTimeout(sortTimer);
+      sortByView[view]={column:name,direction:selected?-sort.direction:(name==='Priority'?-1:1)};
+      render();
+      $('list').querySelectorAll('th button')[headers.indexOf(name)].focus();
+    });
+    if(name==='Priority')control.title='Hours per day through the due date. Higher scores are more urgent.';
+
+    th.append(control);header.append(th);
+  }
+  const body=table.createTBody();
+  for(const t of tasks){
+    const row=body.insertRow();
+    row.dataset.taskId=t.id;
+    const repeat=t.repeat?(t.repeat.count===1?'':String(t.repeat.count))+t.repeat.unit[0]:'na';
+    for(const [field,value] of [['title',t.title],['due',showDue(t)],['effort',String(t.effort)],['repeat',repeat]]){
+      const cell=row.insertCell();
+      if(field==='due')cell.title=parse(t.due).toLocaleDateString(undefined,{weekday:'long'});
+      if(t.closed){cell.textContent=value;continue;}
+      const control=button(value,()=>edit(t,field));
+      control.className='field';
+      control.setAttribute('aria-label','Edit '+({title:'name',due:'due date',repeat:'recurrence',effort:'effort'})[field]+': '+value);
+      cell.append(control);
+    }
+    if(t.closed){
+      const completedAt=new Date(t.closed);
+      const time=String(completedAt.getHours()).padStart(2,'0')+':'+String(completedAt.getMinutes()).padStart(2,'0');
+      row.insertCell().textContent=display(dateKey(completedAt))+' '+time;
+      row.insertCell().append(taskActions(t));
+      continue;
+    }
+    const progress=document.createElement('div');
+    progress.className='actions progress-controls';
+    const value=document.createElement('span');
+    value.textContent=t.progress+'%';
+    function step(amount){
+      const next=Math.max(0,Math.min(100,t.progress+amount));
+      if(next===100){confirmComplete(t);return;}
+      updateTask(t.id,task=>task.progress=next,true).catch(e=>document.getElementById('status').textContent=e.message);
+    }
+    const minus=button('−',()=>step(-25));
+    const plus=button('+',()=>step(25));
+    minus.setAttribute('aria-label','Decrease progress for '+t.title+' by 25 percentage points');
+    plus.setAttribute('aria-label','Increase progress for '+t.title+' by 25 percentage points');
+    minus.disabled=t.progress===0;
+    progress.append(minus,value,plus);
+    row.insertCell().append(progress);
+    row.insertCell().className='priority-score';
+    updatePriorityRow(row,t,now);
+    const actions=document.createElement('div');actions.className='actions';
+    for(const [unit,name] of [['days','+d'],['weeks','+w'],['months','+m']]){
+      const move=count=>updateTask(t.id,task=>{
+        const due=shift(task.due,count,unit);
+        if(count<0){task.anchor=due;task.occurrence=0;}
+        task.due=due;
+      },true)
+        .catch(e=>$('status').textContent=e.message);
+      const control=button(name,()=>move(1));
+      const unitName=unit.slice(0,-1);
+      control.setAttribute('aria-label','Postpone by one '+unitName);
+      control.title='Add one '+unitName+' (right-click to subtract)';
+      control.oncontextmenu=event=>{
+        event.preventDefault();
+        move(-1);
+      };
+      control.className='compact';
+      actions.append(control);
+    }
+    row.insertCell().append(actions);
+    row.insertCell().append(taskActions(t));
+  }
+  const scroll=document.createElement('div');scroll.className='scroll';scroll.tabIndex=0;
+  scroll.setAttribute('aria-label','Task table');
+  scroll.append(table);$('list').append(scroll);
+  animateReorder(before);
+}
+function openModal(title, fields, label, action, onCancel){
+  $('heading').textContent=title;
+  $('fields').replaceChildren(fields);
+  $('save').textContent=label;
+  $('formError').textContent='';
+  $('cancel').textContent=onCancel?'Keep active':'Cancel';
+  modalAction=action;cancelAction=onCancel;
+  $('modal').showModal();
+}
+async function dismiss(){
+  if($('save').disabled)return;
+  $('save').disabled=true;
+  try{if(cancelAction)await cancelAction();$('modal').close();}
+  catch(e){$('formError').textContent=e.message;}
+  finally{$('save').disabled=false;}
+}
+$('cancel').onclick=dismiss;
+$('modal').oncancel=e=>{e.preventDefault();dismiss();};
+$('form').onsubmit=async e=>{
+  e.preventDefault();
+  $('save').disabled=true;
+  try{await modalAction();$('modal').close();}
+  catch(error){$('formError').textContent=error.message;}
+  finally{$('save').disabled=false;}
+};
+function dateField(initial, minimum, initialTime){
+  const box=document.createElement('fieldset');
+  box.innerHTML='<legend>Due date</legend><div class="actions"></div><label>Pick a date <input type="date" required></label>';
+  const input=box.querySelector('input');
+  input.value=initial;
+  if(minimum)input.min=minimum;
+  const d=today(), sunday=shift(d,(7-parse(d).getDay())%7,'days');
+  const options=[['Today',d],['Tomorrow',shift(d,1,'days')],['End of week (Sunday)',sunday]];
+  const group=box.querySelector('.actions');
+  function highlight(){[...group.children].forEach((b,i)=>b.setAttribute('aria-pressed',String(input.value===options[i][1])));}
+  for(const [name,date] of options) group.append(button(name,()=>{input.value=date;highlight();}));
+  input.oninput=highlight;highlight();
+  const timeLabel=document.createElement('label');
+  timeLabel.textContent='Due time (optional, defaults to 23:59) ';
+  const time=document.createElement('input');
+  time.type='time';time.value=initialTime||'';
+  timeLabel.append(time,button('Clear time',()=>time.value=''));
+  box.append(timeLabel);
+  return {box,input,time};
+}
+function edit(task,field){
+  const fields=document.createElement('div');
+  fields.innerHTML='<label>Task name <input name="title" required maxlength="160"></label>';
+  const title=fields.querySelector('input'); title.value=task?.title||'';
+  const date=dateField(task?.due||today(),null,task?.dueTime);fields.append(date.box);
+  const effort=document.createElement('label');
+  effort.textContent='Estimated effort (one hour per day) ';
+  const estimate=document.createElement('select');
+  for(const n of efforts)estimate.add(new Option(n+' days',n));
+  estimate.value=task?.effort||1;
+  effort.append(estimate);
+  fields.append(effort);
+  const repeat=document.createElement('fieldset');
+  repeat.innerHTML='<legend>Recurrence</legend><label><select aria-label="Repeat mode"><option value="">Does not repeat</option><option value="fixed">Repeat on schedule</option><option value="completion">Repeat after completion</option></select></label><div class="actions"><button type="button" aria-label="Decrease repeat interval">−</button><output></output><button type="button" aria-label="Increase repeat interval">+</button><select aria-label="Repeat unit"><option value="days">Days</option><option value="weeks">Weeks</option><option value="months">Months</option></select></div>';
+  const [mode,unit]=repeat.querySelectorAll('select');
+  const interval=repeat.querySelector('.actions'), output=repeat.querySelector('output');
+  let count=task?.repeat?.count||1;
+  mode.value=task?.repeat?.mode||'';unit.value=task?.repeat?.unit||'weeks';
+  function refreshRepeat(){interval.style.display=mode.value?'flex':'none';output.value='Every '+count;}
+  repeat.querySelectorAll('button')[0].onclick=()=>{count=Math.max(1,count-1);refreshRepeat();};
+  repeat.querySelectorAll('button')[1].onclick=()=>{count=Math.min(365,count+1);refreshRepeat();};
+  mode.onchange=refreshRepeat;refreshRepeat();fields.append(repeat);
+  if(field){
+    const selected={title:title.parentElement,due:date.box,repeat,effort}[field];
+    fields.replaceChildren(selected);
+  }
+  const heading={title:'Edit task name',due:'Edit due date',repeat:'Edit recurrence',effort:'Edit effort'}[field]||'New task';
+  openModal(heading,fields,task?'Save':'Add task',()=>{
+    const name=title.value.trim();
+    if(!name)throw Error('Enter a task name.');
+    const rule=mode.value?{mode:mode.value,unit:unit.value,count}:null;
+    const due=date.input.value;
+    if(task)return updateTask(task.id,t=>{
+      const nextDue=field==='due'?due:t.due;
+      const nextTime=field==='due'?date.time.value:t.dueTime;
+      const nextRule=field==='repeat'?rule:t.repeat;
+      if(t.due!==nextDue || JSON.stringify(t.repeat)!==JSON.stringify(nextRule)){t.anchor=nextDue;t.occurrence=0;}
+      Object.assign(t,{title:field==='title'?name:t.title,due:nextDue,dueTime:nextTime,repeat:nextRule,effort:field==='effort'?Number(estimate.value):t.effort});
+    });
+    return change(tasks=>tasks.push({id:uid(),title:name,due,dueTime:date.time.value,anchor:due,occurrence:0,effort:Number(estimate.value),progress:0,repeat:rule,closed:null,successor:null}));
+  });
+}
+function taskActions(task){
+  const actions=document.createElement('div');
+  actions.className='actions';
+  const complete=task.closed?button('Reopen',()=>reopen(task)):button('C',()=>{
+    completeTask(task).catch(e=>document.getElementById('status').textContent=e.message);
+  },true);
+  if(!task.closed){
+    complete.title='Complete task';
+    complete.setAttribute('aria-label','Complete '+task.title);
+  }
+  const remove=button('D',()=>openModal('Delete this task?',paragraph(task.title),'Delete',
+    ()=>updateTask(task.id,(t,tasks)=>tasks.splice(tasks.indexOf(t),1))));
+  remove.className='delete-task';
+  remove.title='Delete task';
+  remove.setAttribute('aria-label','Delete '+task.title);
+  actions.append(complete,remove);
+  return actions;
+}
+function completeTask(task){
+  return updateTask(task.id,(t,tasks)=>{
+    if(t.closed)return;
+    t.closed=new Date().toISOString();t.progress=100;
+    if(t.repeat&&!t.successor){
+      const {mode,count,unit}=t.repeat;
+      const occurrence=mode==='fixed'?t.occurrence+1:1;
+      const anchor=mode==='fixed'?t.anchor:today();
+      const due=shift(anchor,count*occurrence,unit);
+      const id=uid();
+      tasks.push({...t,id,due,anchor,occurrence,progress:0,closed:null,successor:null});
+      t.successor=id;
+    }
+  });
+}
+function confirmComplete(task){
+  openModal('Complete this task?',paragraph(task.title),'Complete',
+    ()=>completeTask(task),()=>updateTask(task.id,t=>t.progress=75,true));
+}
+function reopen(task){
+  const apply=(t,due,dueTime)=>{
+    t.closed=null;t.progress=0;t.due=due;t.dueTime=dueTime;
+  };
+  if(deadline(task)>=Date.now()){
+    updateTask(task.id,t=>apply(t,t.due,t.dueTime)).catch(e=>$('status').textContent=e.message);
+    return;
+  }
+  const date=dateField(today(),today());
+  openModal('Choose a new due date',date.box,'Reopen',()=>{
+    const due=date.input.value, dueTime=date.time.value;
+    if(deadline({due,dueTime})<Date.now())throw Error('Choose a deadline in the future.');
+    return updateTask(task.id,t=>apply(t,due,dueTime));
+  });
+}
+$('add').onclick=()=>edit();
+for(const tab of ['active','completed'])$(tab).onclick=()=>{
+  view=tab;
+  for(const id of ['active','completed'])$(id).setAttribute('aria-pressed',String(id===view));
+  render();refresh();
+};
+$('dropbox').onclick=async()=>{
+  if(busy||connecting)return;
+  if(session()){
+    sessionStorage.removeItem(tokenKey);
+    state={revision:0,tasks:[]};revision=null;loaded=false;
+    $('list').replaceChildren();
+    await refresh();
+    return;
+  }
+  connecting=true;connectionControls();
+  try{await connect();}
+  catch(e){$('status').textContent=e.message;connecting=false;connectionControls();}
+};
+async function start(){
+  connecting=true;connectionControls();
+  try{await finishConnection();}
+  catch(e){$('status').textContent=e.message;return;}
+  finally{connecting=false;connectionControls();}
+  await refresh();
+}
+start();
+document.getElementById("refresh").onclick=()=>refresh(true);
+window.addEventListener('focus',refresh);
+
+setInterval(()=>{if(!document.hidden&&!document.activeElement?.matches('input,button,select'))refresh();},15000);
+setInterval(tickPriority,1000);
+</script>
+</html>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
